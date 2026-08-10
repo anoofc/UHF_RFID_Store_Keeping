@@ -52,17 +52,19 @@ const seedTools: ToolRecord[] = [
 ];
 
 const demoEntries: EntryRecord[] = [
-  { id: 8, toolId: 1, epc: seedTools[0].epc, enteredAt: new Date(Date.now() - 4 * 60000).toISOString(), readCount: 1, source: "RFID", toolName: seedTools[0].name, category: seedTools[0].category },
-  { id: 7, toolId: 2, epc: seedTools[1].epc, enteredAt: new Date(Date.now() - 31 * 60000).toISOString(), readCount: 1, source: "RFID", toolName: seedTools[1].name, category: seedTools[1].category },
-  { id: 6, toolId: 3, epc: seedTools[2].epc, enteredAt: new Date(Date.now() - 74 * 60000).toISOString(), readCount: 1, source: "Simulator", toolName: seedTools[2].name, category: seedTools[2].category },
+  { id: 8, toolId: 1, epc: seedTools[0].epc, enteredAt: "2026-08-10T16:49:00.000Z", readCount: 1, source: "RFID", toolName: seedTools[0].name, category: seedTools[0].category },
+  { id: 7, toolId: 2, epc: seedTools[1].epc, enteredAt: "2026-08-10T16:22:00.000Z", readCount: 1, source: "RFID", toolName: seedTools[1].name, category: seedTools[1].category },
+  { id: 6, toolId: 3, epc: seedTools[2].epc, enteredAt: "2026-08-10T15:39:00.000Z", readCount: 1, source: "Simulator", toolName: seedTools[2].name, category: seedTools[2].category },
 ];
 
+const DISPLAY_TIME_ZONE = "Asia/Kolkata";
+
 function time(value: number | string) {
-  return new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
+  return new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: DISPLAY_TIME_ZONE }).format(new Date(value));
 }
 
 function dateTime(value: string) {
-  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: DISPLAY_TIME_ZONE }).format(new Date(value));
 }
 
 function shortEpc(epc: string) {
