@@ -40,3 +40,35 @@ test("binary receive buffer handles fragmented and coalesced frames", () => {
   assert.equal(parsed.length, 2);
   assert.deepEqual(parsed.map((item) => item.tags[0].epc), [A.epc, B.epc]);
 });
+
+test("captured A5 5A UM202 reports decode the 12-byte EPC and signed RSSI", () => {
+  const captured = Uint8Array.from([
+    0xa5, 0x5a, 0x00, 0x19, 0x83, 0x30, 0x00,
+    0xe2, 0x00, 0x00, 0x1b, 0x66, 0x04, 0x00, 0x82, 0x17, 0x20, 0x34, 0xd5,
+    0x00, 0xd4, 0x01, 0xb0, 0x0d, 0x0a,
+  ]);
+  const parser = new Um202Parser();
+  assert.equal(parser.push(captured.slice(0, 3)).length, 0);
+  assert.equal(parser.push(captured.slice(3, 17)).length, 0);
+  const parsed = parser.push(captured.slice(17));
+  assert.equal(parsed.length, 1);
+  assert.deepEqual(parsed[0].tags, [{ epc: "E200001B66040082172034D5", rssi: -44 }]);
+});
+
+test("repeated captured UM202 packets remain one active tag session", () => {
+  const reports = [
+    "A55A0019833000E200001B66040082172034D500D401B00D0A",
+    "A55A0019833000E200001B66040082172034D500D301B70D0A",
+    "A55A0019833000E200001B66040082172034D500D501B10D0A",
+  ].map((hex) => Uint8Array.from(hex.match(/../g)!.map((pair) => Number.parseInt(pair, 16))));
+  const stream = Uint8Array.from([0xff, 0x00, ...reports[0], ...reports[1], ...reports[2]]);
+  const parser = new Um202Parser();
+  const frames = parser.push(stream);
+  assert.equal(frames.length, 3);
+  const manager = new TagSessionManager(3000);
+  let activations = 0;
+  frames.forEach((frame, index) => { activations += manager.processFrame(frame.tags, index * 50).activations.length; });
+  assert.equal(activations, 1);
+  assert.equal(manager.snapshot()[0].readCount, 3);
+  assert.equal(manager.snapshot()[0].lastRSSI, -43);
+});

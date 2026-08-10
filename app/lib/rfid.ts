@@ -93,9 +93,12 @@ type FrameDecoder = (frame: Uint8Array) => TagRead[];
 /**
  * Buffered UM202 protocol boundary. It handles fragmented/coalesced reads and
  * delegates payload interpretation so the decoder can be swapped when the
- * reader vendor's final frame document is supplied.
+ * reader vendor's final frame document is supplied. The primary envelope is
+ * the observed UM202 report format:
  *
- * Envelope: BB | type | command | length(2) | payload | checksum | 7E
+ * A5 5A | total length(2) | 83 30 | antenna | EPC | signal(2) | CRC(2) | 0D 0A
+ *
+ * The earlier BB...7E envelope remains supported as a compatibility profile.
  */
 export class Um202Parser {
   private buffer = new Uint8Array(0);
@@ -111,22 +114,32 @@ export class Um202Parser {
     const parsed: ParsedFrame[] = [];
 
     while (this.buffer.length) {
-      const start = this.buffer.indexOf(0xbb);
+      const start = findFrameStart(this.buffer);
       if (start < 0) {
         this.buffer = new Uint8Array(0);
         break;
       }
       if (start > 0) this.buffer = this.buffer.slice(start);
-      if (this.buffer.length < 7) break;
-      const payloadLength = (this.buffer[3] << 8) | this.buffer[4];
-      const totalLength = payloadLength + 7;
-      if (payloadLength > 4096) {
+
+      const isA55A = this.buffer[0] === 0xa5;
+      const minimumHeaderLength = isA55A ? 4 : 5;
+      if (this.buffer.length < minimumHeaderLength) break;
+
+      const declaredLength = isA55A
+        ? (this.buffer[2] << 8) | this.buffer[3]
+        : (this.buffer[3] << 8) | this.buffer[4];
+      const totalLength = isA55A ? declaredLength : declaredLength + 7;
+      const minimumFrameLength = isA55A ? 13 : 7;
+      if (totalLength < minimumFrameLength || totalLength > 4096) {
         this.buffer = this.buffer.slice(1);
         continue;
       }
       if (this.buffer.length < totalLength) break;
       const candidate = this.buffer.slice(0, totalLength);
-      if (candidate[totalLength - 1] !== 0x7e) {
+      const hasValidEnd = isA55A
+        ? candidate[totalLength - 2] === 0x0d && candidate[totalLength - 1] === 0x0a
+        : candidate[totalLength - 1] === 0x7e;
+      if (!hasValidEnd) {
         this.buffer = this.buffer.slice(1);
         continue;
       }
@@ -142,8 +155,42 @@ export class Um202Parser {
   }
 }
 
-/** Default inventory decoder supporting common single-tag and multi-record payloads. */
+function findFrameStart(bytes: Uint8Array) {
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] === 0xbb) return index;
+    if (bytes[index] === 0xa5 && (index + 1 === bytes.length || bytes[index + 1] === 0x5a)) return index;
+  }
+  return -1;
+}
+
+/** Default inventory decoder for the observed UM202 format plus legacy profile. */
 export function decodeUm202InventoryFrame(frame: Uint8Array): TagRead[] {
+  if (frame[0] === 0xa5 && frame[1] === 0x5a) return decodeA55AInventoryFrame(frame);
+  return decodeLegacyInventoryFrame(frame);
+}
+
+/**
+ * Decodes the captured 25-byte inventory report. The length field is used to
+ * retain support for a different EPC length if the reader is configured for it.
+ * The observed signal byte is an 8-bit two's-complement RSSI value.
+ */
+export function decodeA55AInventoryFrame(frame: Uint8Array): TagRead[] {
+  if (frame.length < 13 || frame[0] !== 0xa5 || frame[1] !== 0x5a) return [];
+  const declaredLength = (frame[2] << 8) | frame[3];
+  if (declaredLength !== frame.length || frame[4] !== 0x83 || frame[5] !== 0x30) return [];
+  if (frame[frame.length - 2] !== 0x0d || frame[frame.length - 1] !== 0x0a) return [];
+
+  // Byte 6 is the antenna/channel. The six-byte trailer is signal metadata,
+  // a two-byte CRC, and CRLF. CRC validation remains isolated until the vendor
+  // polynomial is confirmed.
+  const epc = frame.slice(7, frame.length - 6);
+  if (epc.length < 4) return [];
+  const rawRssi = frame[frame.length - 5];
+  const rssi = rawRssi > 127 ? rawRssi - 256 : rawRssi;
+  return [{ epc: toHex(epc).replaceAll(" ", ""), rssi }];
+}
+
+function decodeLegacyInventoryFrame(frame: Uint8Array): TagRead[] {
   if (frame.length < 7 || frame[2] !== 0x22) return [];
   const payloadLength = (frame[3] << 8) | frame[4];
   const payload = frame.slice(5, 5 + payloadLength);
