@@ -9,7 +9,7 @@ import {
   TagSessionManager,
   Um202Parser,
 } from "./lib/rfid";
-import { formatDateTime, formatTime, localDateKey } from "./lib/datetime";
+import { formatDateTime, formatTime, localDateKey, parseStoredTimestamp } from "./lib/datetime";
 
 type Page = "dashboard" | "tools" | "entries" | "diagnostics";
 type ToolRecord = {
@@ -82,6 +82,7 @@ export function RFIDConsole() {
   const [toast, setToast] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [selectedTool, setSelectedTool] = useState<ToolRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [now, setNow] = useState(Date.now());
   const manager = useRef(new TagSessionManager(3000));
@@ -299,13 +300,14 @@ export function RFIDConsole() {
 
         <section className="content">
           {page === "dashboard" && <Dashboard tools={store.tools} entries={todayEntries} sessions={sessions} frames={frames} status={status} onNavigate={navigate} onSimulate={() => simulate(false)} onConnect={status === "connected" ? disconnectReader : connectReader} />}
-          {page === "tools" && <ToolsPage tools={filteredTools} totalTools={store.tools.length} isFiltered={Boolean(search.trim())} entries={store.entries} onAdd={() => setRegistrationOpen(true)} onDelete={(tool) => setDeleteTarget({ type: "tool", id: tool.id, label: tool.name })} />}
+          {page === "tools" && <ToolsPage tools={filteredTools} totalTools={store.tools.length} isFiltered={Boolean(search.trim())} entries={store.entries} onAdd={() => setRegistrationOpen(true)} onSelect={setSelectedTool} onDelete={(tool) => setDeleteTarget({ type: "tool", id: tool.id, label: tool.name })} />}
           {page === "entries" && <EntriesPage entries={filteredEntries} totalEntries={store.entries.length} isFiltered={Boolean(search.trim())} onDelete={(entry) => setDeleteTarget({ type: "entry", id: entry.id, label: `${entry.toolName ?? "Unknown tool"} · ${formatDateTime(entry.enteredAt)}` })} />}
           {page === "diagnostics" && <Diagnostics sessions={sessions} frames={frames} now={now} status={status} ports={ports} selectedPort={selectedPort} setSelectedPort={setSelectedPort} chooseReader={chooseReader} connectReader={connectReader} disconnectReader={disconnectReader} />}
         </section>
       </main>
 
       {registrationOpen && <RegistrationModal sessions={sessions} tools={store.tools} onClose={() => setRegistrationOpen(false)} onSaved={(data) => { setStore(data); setRegistrationOpen(false); notify("Tool registered and ready for detection."); }} />}
+      {selectedTool && <ToolHistoryDialog tool={selectedTool} entries={store.entries} onClose={() => setSelectedTool(null)} />}
       {deleteTarget && <DeleteDialog target={deleteTarget} deleting={deleting} onCancel={() => setDeleteTarget(null)} onConfirm={confirmDelete} />}
       {toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}
     </div>
@@ -340,9 +342,9 @@ function PanelHeading({ title, subtitle, action, onAction }: { title: string; su
   return <header className="panel-heading"><div><h2>{title}</h2><p>{subtitle}</p></div>{action && <button onClick={onAction}>{action} <Icon name="chevron" /></button>}</header>;
 }
 
-function ToolsPage({ tools, totalTools, isFiltered, entries, onAdd, onDelete }: { tools: ToolRecord[]; totalTools: number; isFiltered: boolean; entries: EntryRecord[]; onAdd: () => void; onDelete: (tool: ToolRecord) => void }) {
+function ToolsPage({ tools, totalTools, isFiltered, entries, onAdd, onSelect, onDelete }: { tools: ToolRecord[]; totalTools: number; isFiltered: boolean; entries: EntryRecord[]; onAdd: () => void; onSelect: (tool: ToolRecord) => void; onDelete: (tool: ToolRecord) => void }) {
   const countLabel = isFiltered ? `${tools.length} of ${totalTools} registered tools` : `${totalTools} registered tools`;
-  return <section className="panel table-panel"><PanelHeading title={countLabel} subtitle={isFiltered ? "Filtered results · clear search to show every registered tool" : "Each EPC is unique and maps to one physical tool"} action="Register tool" onAction={onAdd} /><div className="table-scroll"><table><thead><tr><th>Tool</th><th>Category</th><th>Serial number</th><th>EPC</th><th>Entries</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{tools.map((tool) => <tr key={tool.id}><td><div className="table-tool"><span>⌁</span><strong>{tool.name}</strong></div></td><td>{tool.category}</td><td><code>{tool.serialNumber}</code></td><td><code>{tool.epc}</code></td><td>{entries.filter((entry) => entry.toolId === tool.id).length}</td><td><span className="status-pill available"><i/> {tool.status}</span></td><td className="action-cell"><button className="delete-button" onClick={() => onDelete(tool)} aria-label={`Delete ${tool.name}`}>Delete</button></td></tr>)}</tbody></table></div>{!tools.length && <Empty text="No matching tools found. Clear the search to show all registered tools." />}</section>;
+  return <section className="panel table-panel"><PanelHeading title={countLabel} subtitle={isFiltered ? "Filtered results · clear search to show every registered tool" : "Select a tool to view its recorded entry history"} action="Register tool" onAction={onAdd} /><div className="table-scroll"><table><thead><tr><th>Tool</th><th>Category</th><th>Serial number</th><th>EPC</th><th>Entries</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{tools.map((tool) => <tr key={tool.id}><td><button className="tool-link" onClick={() => onSelect(tool)} aria-label={`View entry history for ${tool.name}`}><span>⌁</span><strong>{tool.name}</strong><Icon name="chevron" /></button></td><td>{tool.category}</td><td><code>{tool.serialNumber}</code></td><td><code>{tool.epc}</code></td><td>{entries.filter((entry) => entry.toolId === tool.id).length}</td><td><span className="status-pill available"><i/> {tool.status}</span></td><td className="action-cell"><button className="delete-button" onClick={() => onDelete(tool)} aria-label={`Delete ${tool.name}`}>Delete</button></td></tr>)}</tbody></table></div>{!tools.length && <Empty text="No matching tools found. Clear the search to show all registered tools." />}</section>;
 }
 
 function EntriesPage({ entries, totalEntries, isFiltered, onDelete }: { entries: EntryRecord[]; totalEntries: number; isFiltered: boolean; onDelete: (entry: EntryRecord) => void }) {
@@ -381,6 +383,16 @@ function RegistrationModal({ sessions, tools, onClose, onSaved }: { sessions: Ta
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not register tool"); setSaving(false); }
   }
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={save}><header><div><span className="eyebrow">RFID registry</span><h2>Add a new tool</h2><p>Link one physical tool to a unique UHF EPC.</p></div><button type="button" className="icon-button" aria-label="Close" onClick={onClose}><Icon name="close" /></button></header><div className="form-grid"><label className="field-label">Tool name<input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. DeWalt Angle Grinder" /></label><label className="field-label">Category<select value={category} onChange={(e) => setCategory(e.target.value)}><option>Power tools</option><option>Hand tools</option><option>Test equipment</option><option>Safety equipment</option><option>Other</option></select></label><label className="field-label">Serial number<input value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} placeholder="Manufacturer serial" /></label><label className="field-label">EPC<input value={epc} onChange={(e) => setEpc(e.target.value.toUpperCase())} placeholder="24-digit hexadecimal EPC" /></label></div><div className="detected"><strong>Detected unregistered tags</strong><p>Select the tag introduced for this tool. Newest detection is highlighted.</p>{candidates.length ? candidates.map((session, index) => <button type="button" key={session.epc} className={`${epc === session.epc ? "selected" : ""} ${index === 0 ? "newest" : ""}`} onClick={() => setEpc(session.epc)}><span className="live-dot"/><code>{session.epc}</code><em>{index === 0 ? "Newest" : `${session.readCount} reads`}</em></button>) : <div className="empty-small">No unregistered tags detected. You can enter the EPC manually.</div>}</div>{error && <p className="form-error">{error}</p>}<footer><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={saving}>{saving ? "Saving…" : "Register tool"}</button></footer></form></div>;
+}
+
+function ToolHistoryDialog({ tool, entries, onClose }: { tool: ToolRecord; entries: EntryRecord[]; onClose: () => void }) {
+  const [showAll, setShowAll] = useState(false);
+  const toolEntries = entries
+    .filter((entry) => entry.toolId === tool.id || entry.epc === tool.epc)
+    .slice()
+    .sort((a, b) => parseStoredTimestamp(b.enteredAt).getTime() - parseStoredTimestamp(a.enteredAt).getTime());
+  const visibleEntries = showAll ? toolEntries : toolEntries.slice(0, 5);
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="history-dialog" role="dialog" aria-modal="true" aria-labelledby="history-title"><header><div className="history-title"><span className="history-tool-icon">⌁</span><div><span className="eyebrow">Tool entry history</span><h2 id="history-title">{tool.name}</h2><p>{tool.category} · <code>{tool.serialNumber}</code></p></div></div><button type="button" className="icon-button" aria-label="Close history" onClick={onClose}><Icon name="close" /></button></header><div className="history-meta"><div><span>EPC</span><code>{tool.epc}</code></div><div><span>Total entries</span><strong>{toolEntries.length}</strong></div><div><span>Last recorded</span><strong>{toolEntries[0] ? formatDateTime(toolEntries[0].enteredAt) : "Never"}</strong></div></div><div className="history-section-heading"><div><h3>{showAll ? "All recorded times" : "Last 5 recorded times"}</h3><p>One record per out-of-range to active transition</p></div>{toolEntries.length > 5 && <button onClick={() => setShowAll((current) => !current)}>{showAll ? "Show latest 5" : `View all ${toolEntries.length}`} <Icon name="chevron" /></button>}</div><div className="history-list">{visibleEntries.map((entry, index) => <div className="history-row" key={entry.id}><span className="history-number">{String(index + 1).padStart(2, "0")}</span><div><strong>{formatDateTime(entry.enteredAt)}</strong><small>{entry.source} reader event</small></div><span className="status-pill logged"><i/> Recorded</span></div>)}{!toolEntries.length && <Empty text="No entry times have been recorded for this tool yet." />}</div><footer><button className="secondary" onClick={onClose}>Close</button></footer></section></div>;
 }
 
 function DeleteDialog({ target, deleting, onCancel, onConfirm }: { target: DeleteTarget; deleting: boolean; onCancel: () => void; onConfirm: () => void }) {

@@ -37,7 +37,7 @@ export async function GET() {
       db.prepare("SELECT id, name, category, serial_number AS serialNumber, epc, status, strftime('%Y-%m-%dT%H:%M:%SZ', created_at) AS createdAt FROM tools ORDER BY created_at DESC").all(),
       db.prepare(`SELECT e.id, e.tool_id AS toolId, e.epc, strftime('%Y-%m-%dT%H:%M:%SZ', e.entered_at) AS enteredAt,
         e.read_count AS readCount, e.source, t.name AS toolName, t.category
-        FROM entries e LEFT JOIN tools t ON t.id = e.tool_id ORDER BY e.entered_at DESC LIMIT 500`).all(),
+        FROM entries e LEFT JOIN tools t ON t.id = e.tool_id ORDER BY e.entered_at DESC`).all(),
     ]);
     return Response.json({ tools: toolRows.results, entries: entryRows.results });
   } catch (error) {
