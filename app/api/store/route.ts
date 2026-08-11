@@ -59,7 +59,9 @@ export async function POST(request: Request) {
     } else if (body.action === "logEntry" && body.epc) {
       const epc = body.epc.replace(/[^0-9a-f]/gi, "").toUpperCase();
       const tool = await db.prepare("SELECT id FROM tools WHERE epc = ? LIMIT 1").bind(epc).first<{ id: number }>();
-      if (!tool) return Response.json({ logged: false, reason: "unregistered" });
+      // Preserve the mutation response contract even if registration changed
+      // between the client's lookup and this database operation.
+      if (!tool) return GET();
       await db.prepare("INSERT INTO entries (tool_id, epc, source) VALUES (?, ?, ?)")
         .bind(tool.id, epc, body.source ?? "RFID").run();
     } else if (body.action === "deleteEntry" && Number.isInteger(body.entryId)) {

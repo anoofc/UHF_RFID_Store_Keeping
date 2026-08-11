@@ -60,6 +60,24 @@ const demoEntries: EntryRecord[] = [
 ];
 const DEFAULT_SIMULATION_FRAME = seedTools.slice(0, 3).map((tool) => tool.epc).join(" ");
 
+function isStoreData(value: unknown): value is StoreData {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<StoreData>;
+  return Array.isArray(candidate.tools) && Array.isArray(candidate.entries);
+}
+
+async function readStoreData(response: Response): Promise<StoreData> {
+  const data: unknown = await response.json();
+  if (!response.ok) {
+    const message = data && typeof data === "object" && "error" in data && typeof data.error === "string"
+      ? data.error
+      : "The database request failed";
+    throw new Error(message);
+  }
+  if (!isStoreData(data)) throw new Error("The database returned an incomplete store response");
+  return data;
+}
+
 function shortEpc(epc: string) {
   return epc.length > 15 ? `${epc.slice(0, 7)}…${epc.slice(-6)}` : epc;
 }
@@ -85,6 +103,10 @@ export function RFIDConsole() {
   const [selectedTool, setSelectedTool] = useState<ToolRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [now, setNow] = useState(Date.now());
+  // Keep rendering safe during hot reload if an older client briefly retained
+  // the pre-fix partial response in component state.
+  const safeTools = Array.isArray(store.tools) ? store.tools : [];
+  const safeEntries = Array.isArray(store.entries) ? store.entries : [];
   const manager = useRef(new TagSessionManager(3000));
   const parser = useRef(new Um202Parser());
   const activePort = useRef<SerialPortLike | null>(null);
@@ -94,12 +116,11 @@ export function RFIDConsole() {
   const refreshStore = useCallback(async () => {
     try {
       const response = await fetch("/api/store");
-      if (!response.ok) return;
-      const data = (await response.json()) as StoreData;
+      const data = await readStoreData(response);
       setStore(data);
       if (!data.tools.length) {
         const seeded = await fetch("/api/store", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "seed" }) });
-        if (seeded.ok) setStore((await seeded.json()) as StoreData);
+        setStore(await readStoreData(seeded));
       }
     } catch {
       // The UI remains fully demonstrable with its local sample records.
@@ -126,15 +147,15 @@ export function RFIDConsole() {
   };
 
   const logActivation = useCallback(async (session: TagSession, source: string) => {
-    const tool = store.tools.find((item) => item.epc === session.epc);
+    const tool = safeTools.find((item) => item.epc === session.epc);
     if (!tool) return;
     const optimistic: EntryRecord = { id: Date.now(), toolId: tool.id, epc: tool.epc, enteredAt: new Date(session.firstSeen).toISOString(), readCount: 1, source, toolName: tool.name, category: tool.category };
     setStore((current) => ({ ...current, entries: [optimistic, ...current.entries] }));
     try {
       const response = await fetch("/api/store", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "logEntry", epc: session.epc, source }) });
-      if (response.ok) setStore((await response.json()) as StoreData);
+      setStore(await readStoreData(response));
     } catch { /* optimistic event remains visible */ }
-  }, [store.tools]);
+  }, [safeTools]);
 
   const processTags = useCallback((tags: TagRead[], source: string, rawHex = "SIMULATED MULTI-TAG FRAME") => {
     const receivedAt = Date.now();
@@ -210,9 +231,9 @@ export function RFIDConsole() {
   }
 
   const activeSessions = sessions.filter((session) => session.isActive);
-  const registeredActive = activeSessions.filter((session) => store.tools.some((tool) => tool.epc === session.epc));
+  const registeredActive = activeSessions.filter((session) => safeTools.some((tool) => tool.epc === session.epc));
   const todayKey = localDateKey(now);
-  const todayEntries = store.entries.filter((entry) => localDateKey(entry.enteredAt) === todayKey);
+  const todayEntries = safeEntries.filter((entry) => localDateKey(entry.enteredAt) === todayKey);
   const title: Record<Page, [string, string]> = {
     dashboard: ["Good morning", "Here’s what’s happening in your tool room."],
     tools: ["Tool registry", "Manage every RFID-linked asset in one place."],
@@ -220,17 +241,17 @@ export function RFIDConsole() {
     diagnostics: ["RFID diagnostics", "Inspect the live multi-tag field and reader health."],
   };
 
-  const filteredTools = store.tools.filter((tool) => `${tool.name} ${tool.category} ${tool.serialNumber} ${tool.epc}`.toLowerCase().includes(search.toLowerCase()));
-  const filteredEntries = store.entries.filter((entry) => `${entry.toolName} ${entry.category} ${entry.epc}`.toLowerCase().includes(search.toLowerCase()));
+  const filteredTools = safeTools.filter((tool) => `${tool.name} ${tool.category} ${tool.serialNumber} ${tool.epc}`.toLowerCase().includes(search.toLowerCase()));
+  const filteredEntries = safeEntries.filter((entry) => `${entry.toolName} ${entry.category} ${entry.epc}`.toLowerCase().includes(search.toLowerCase()));
 
   async function confirmDelete() {
     if (!deleteTarget) return;
-    const previous = store;
+    const previous: StoreData = { tools: safeTools, entries: safeEntries };
     const next = deleteTarget.type === "entry"
-      ? { ...store, entries: store.entries.filter((entry) => entry.id !== deleteTarget.id) }
+      ? { tools: safeTools, entries: safeEntries.filter((entry) => entry.id !== deleteTarget.id) }
       : {
-          tools: store.tools.filter((tool) => tool.id !== deleteTarget.id),
-          entries: store.entries.map((entry) => entry.toolId === deleteTarget.id
+          tools: safeTools.filter((tool) => tool.id !== deleteTarget.id),
+          entries: safeEntries.map((entry) => entry.toolId === deleteTarget.id
             ? { ...entry, toolId: 0, toolName: undefined, category: undefined }
             : entry),
         };
@@ -244,8 +265,7 @@ export function RFIDConsole() {
           ? { action: "deleteEntry", entryId: deleteTarget.id }
           : { action: "deleteTool", toolId: deleteTarget.id }),
       });
-      const data = await response.json() as StoreData & { error?: string };
-      if (!response.ok) throw new Error(data.error ?? "Delete failed");
+      const data = await readStoreData(response);
       setStore(data);
       notify(deleteTarget.type === "entry" ? "Entry deleted." : "Tool registration deleted. Historical entries were retained.");
       setDeleteTarget(null);
@@ -299,15 +319,15 @@ export function RFIDConsole() {
         </header>
 
         <section className="content">
-          {page === "dashboard" && <Dashboard tools={store.tools} entries={todayEntries} sessions={sessions} frames={frames} status={status} onNavigate={navigate} onSimulate={() => simulate(false)} onConnect={status === "connected" ? disconnectReader : connectReader} />}
-          {page === "tools" && <ToolsPage tools={filteredTools} totalTools={store.tools.length} isFiltered={Boolean(search.trim())} entries={store.entries} onAdd={() => setRegistrationOpen(true)} onSelect={setSelectedTool} onDelete={(tool) => setDeleteTarget({ type: "tool", id: tool.id, label: tool.name })} />}
-          {page === "entries" && <EntriesPage entries={filteredEntries} totalEntries={store.entries.length} isFiltered={Boolean(search.trim())} onDelete={(entry) => setDeleteTarget({ type: "entry", id: entry.id, label: `${entry.toolName ?? "Unknown tool"} · ${formatDateTime(entry.enteredAt)}` })} />}
+          {page === "dashboard" && <Dashboard tools={safeTools} entries={todayEntries} sessions={sessions} frames={frames} status={status} onNavigate={navigate} onSimulate={() => simulate(false)} onConnect={status === "connected" ? disconnectReader : connectReader} />}
+          {page === "tools" && <ToolsPage tools={filteredTools} totalTools={safeTools.length} isFiltered={Boolean(search.trim())} entries={safeEntries} onAdd={() => setRegistrationOpen(true)} onSelect={setSelectedTool} onDelete={(tool) => setDeleteTarget({ type: "tool", id: tool.id, label: tool.name })} />}
+          {page === "entries" && <EntriesPage entries={filteredEntries} totalEntries={safeEntries.length} isFiltered={Boolean(search.trim())} onDelete={(entry) => setDeleteTarget({ type: "entry", id: entry.id, label: `${entry.toolName ?? "Unknown tool"} · ${formatDateTime(entry.enteredAt)}` })} />}
           {page === "diagnostics" && <Diagnostics sessions={sessions} frames={frames} now={now} status={status} ports={ports} selectedPort={selectedPort} setSelectedPort={setSelectedPort} chooseReader={chooseReader} connectReader={connectReader} disconnectReader={disconnectReader} />}
         </section>
       </main>
 
-      {registrationOpen && <RegistrationModal sessions={sessions} tools={store.tools} onClose={() => setRegistrationOpen(false)} onSaved={(data) => { setStore(data); setRegistrationOpen(false); notify("Tool registered and ready for detection."); }} />}
-      {selectedTool && <ToolHistoryDialog tool={selectedTool} entries={store.entries} onClose={() => setSelectedTool(null)} />}
+      {registrationOpen && <RegistrationModal sessions={sessions} tools={safeTools} onClose={() => setRegistrationOpen(false)} onSaved={(data) => { setStore(data); setRegistrationOpen(false); notify("Tool registered and ready for detection."); }} />}
+      {selectedTool && <ToolHistoryDialog tool={selectedTool} entries={safeEntries} onClose={() => setSelectedTool(null)} />}
       {deleteTarget && <DeleteDialog target={deleteTarget} deleting={deleting} onCancel={() => setDeleteTarget(null)} onConfirm={confirmDelete} />}
       {toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}
     </div>
@@ -377,8 +397,7 @@ function RegistrationModal({ sessions, tools, onClose, onSaved }: { sessions: Ta
     if (!name.trim() || !serialNumber.trim() || !epc.trim()) { setError("Name, serial number, and EPC are required."); setSaving(false); return; }
     try {
       const response = await fetch("/api/store", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "addTool", tool }) });
-      const data = await response.json() as StoreData & { error?: string };
-      if (!response.ok) throw new Error(data.error ?? "Could not register tool");
+      const data = await readStoreData(response);
       onSaved(data);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not register tool"); setSaving(false); }
   }
