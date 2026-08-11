@@ -58,6 +58,7 @@ const demoEntries: EntryRecord[] = [
   { id: 7, toolId: 2, epc: seedTools[1].epc, enteredAt: "2026-08-10T16:22:00.000Z", readCount: 1, source: "RFID", toolName: seedTools[1].name, category: seedTools[1].category },
   { id: 6, toolId: 3, epc: seedTools[2].epc, enteredAt: "2026-08-10T15:39:00.000Z", readCount: 1, source: "Simulator", toolName: seedTools[2].name, category: seedTools[2].category },
 ];
+const DEFAULT_SIMULATION_FRAME = seedTools.slice(0, 3).map((tool) => tool.epc).join(" ");
 
 function shortEpc(epc: string) {
   return epc.length > 15 ? `${epc.slice(0, 7)}…${epc.slice(-6)}` : epc;
@@ -77,7 +78,6 @@ export function RFIDConsole() {
   const [ports, setPorts] = useState<SerialPortLike[]>([]);
   const [selectedPort, setSelectedPort] = useState(0);
   const [search, setSearch] = useState("");
-  const [simInput, setSimInput] = useState(seedTools.slice(0, 3).map((tool) => tool.epc).join(" "));
   const [registrationOpen, setRegistrationOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
@@ -199,7 +199,7 @@ export function RFIDConsole() {
   }
 
   function simulate(burst = false) {
-    const tags = parseSimulationInput(simInput);
+    const tags = parseSimulationInput(DEFAULT_SIMULATION_FRAME);
     if (!tags.length) return notify("Enter at least one hexadecimal EPC.");
     setStatus("simulator");
     const repeat = burst ? 100 : 1;
@@ -290,7 +290,7 @@ export function RFIDConsole() {
           {page === "dashboard" && <Dashboard tools={store.tools} entries={todayEntries} sessions={sessions} frames={frames} status={status} onNavigate={setPage} onSimulate={() => simulate(false)} onConnect={status === "connected" ? disconnectReader : connectReader} />}
           {page === "tools" && <ToolsPage tools={filteredTools} entries={store.entries} onAdd={() => setRegistrationOpen(true)} onDelete={(tool) => setDeleteTarget({ type: "tool", id: tool.id, label: tool.name })} />}
           {page === "entries" && <EntriesPage entries={filteredEntries} onDelete={(entry) => setDeleteTarget({ type: "entry", id: entry.id, label: `${entry.toolName ?? "Unknown tool"} · ${formatDateTime(entry.enteredAt)}` })} />}
-          {page === "diagnostics" && <Diagnostics sessions={sessions} frames={frames} now={now} status={status} ports={ports} selectedPort={selectedPort} setSelectedPort={setSelectedPort} chooseReader={chooseReader} connectReader={connectReader} disconnectReader={disconnectReader} simInput={simInput} setSimInput={setSimInput} simulate={simulate} />}
+          {page === "diagnostics" && <Diagnostics sessions={sessions} frames={frames} now={now} status={status} ports={ports} selectedPort={selectedPort} setSelectedPort={setSelectedPort} chooseReader={chooseReader} connectReader={connectReader} disconnectReader={disconnectReader} />}
         </section>
       </main>
 
@@ -337,10 +337,9 @@ function EntriesPage({ entries, onDelete }: { entries: EntryRecord[]; onDelete: 
   return <section className="panel table-panel"><PanelHeading title="All entry events" subtitle="One row per OUT → ACTIVE EPC transition" /><div className="table-scroll"><table><thead><tr><th>Date & time</th><th>Tool</th><th>Category</th><th>EPC</th><th>Source</th><th>Result</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{entries.map((entry) => <tr key={entry.id}><td><strong>{formatDateTime(entry.enteredAt)}</strong></td><td>{entry.toolName ?? "Deleted / unregistered tool"}</td><td>{entry.category ?? "—"}</td><td><code>{entry.epc}</code></td><td>{entry.source}</td><td><span className="status-pill logged"><i/> Logged once</span></td><td className="action-cell"><button className="delete-button" onClick={() => onDelete(entry)} aria-label={`Delete entry from ${formatDateTime(entry.enteredAt)}`}>Delete</button></td></tr>)}</tbody></table></div>{!entries.length && <Empty text="No matching entry events found." />}</section>;
 }
 
-function Diagnostics({ sessions, frames, now, status, ports, selectedPort, setSelectedPort, chooseReader, connectReader, disconnectReader, simInput, setSimInput, simulate }: { sessions: TagSession[]; frames: ParsedFrame[]; now: number; status: string; ports: SerialPortLike[]; selectedPort: number; setSelectedPort: (index: number) => void; chooseReader: () => void; connectReader: () => void; disconnectReader: () => void; simInput: string; setSimInput: (value: string) => void; simulate: (burst?: boolean) => void }) {
+function Diagnostics({ sessions, frames, now, status, ports, selectedPort, setSelectedPort, chooseReader, connectReader, disconnectReader }: { sessions: TagSession[]; frames: ParsedFrame[]; now: number; status: string; ports: SerialPortLike[]; selectedPort: number; setSelectedPort: (index: number) => void; chooseReader: () => void; connectReader: () => void; disconnectReader: () => void }) {
   return <div className="diagnostic-layout">
     <section className="panel connection-panel"><PanelHeading title="Reader connection" subtitle="UM202 · A5 5A / 83 30 binary reports" /><div className="connection-state"><span className={`large-signal ${status}`}><i/><i/><i/><i/></span><div><strong>{status === "connected" ? "Reader online" : status === "simulator" ? "Simulator mode" : "Reader offline"}</strong><p>{status === "connected" ? "Receiving at 115200 baud, 8 data bits, no parity, 1 stop bit." : "Select an authorized serial port or grant access to a new reader."}</p></div></div><label className="field-label">Serial port<select value={selectedPort} onChange={(event) => setSelectedPort(Number(event.target.value))}><option value={0}>{ports.length ? portName(ports[0], 0) : "No authorized ports"}</option>{ports.slice(1).map((port, index) => <option value={index + 1} key={index}>{portName(port, index + 1)}</option>)}</select></label><div className="button-row"><button className="secondary" onClick={chooseReader}>Choose port</button><button className="primary" onClick={status === "connected" ? disconnectReader : connectReader}>{status === "connected" ? "Disconnect" : "Connect reader"}</button></div></section>
-    <section className="panel simulator-panel"><PanelHeading title="Multi-tag simulator" subtitle="Duplicates are suppressed per EPC session" /><label className="field-label">EPCs in frame<textarea value={simInput} onChange={(event) => setSimInput(event.target.value)} rows={4} spellCheck={false}/></label><div className="button-row"><button className="secondary" onClick={() => simulate(false)}>Simulate frame</button><button className="primary" onClick={() => simulate(true)}>Rapid burst × 100</button></div><p className="hint">Wait 3 seconds before replaying to create a new entry session.</p></section>
     <section className="panel monitor-panel"><PanelHeading title="Live tag monitor" subtitle={`${sessions.filter((s) => s.isActive).length} active · ${sessions.length} tracked in memory`} /><div className="table-scroll"><table><thead><tr><th>EPC</th><th>First seen</th><th>Last seen</th><th>Reads</th><th>RSSI</th><th>Frequency</th><th>Stability</th><th>Status</th></tr></thead><tbody>{sessions.map((session) => { const duration = Math.max(1, (session.lastSeen - session.firstSeen) / 1000); const frequency = session.readCount / duration; const stability = Math.min(99, Math.round((session.readCount / Math.max(1, duration * 5)) * 100)); return <tr key={session.epc}><td><code>{session.epc}</code></td><td>{formatTime(session.firstSeen)}</td><td>{Math.max(0, (now - session.lastSeen) / 1000).toFixed(1)}s ago</td><td>{session.readCount}</td><td>{session.lastRSSI ?? "—"}{session.lastRSSI !== undefined && " dBm"}</td><td>{frequency.toFixed(1)}/s</td><td><span className="stability"><i style={{ width: `${stability}%` }}/></span>{stability}%</td><td><span className={`status-pill ${session.isActive ? "active" : "out"}`}><i/>{session.isActive ? "ACTIVE" : "OUT"}</span></td></tr>; })}</tbody></table></div>{!sessions.length && <Empty text="No EPC sessions yet. Simulate a frame or connect the reader." />}</section>
     <section className="panel stream-panel"><PanelHeading title="Live UHF tag stream" subtitle="Most recent decoded reader frames" /><div className="frame-stream">{frames.map((frame) => <article key={`${frame.sequence}-${frame.receivedAt}`}><header><strong>Frame #{frame.sequence}</strong><span>{formatTime(frame.receivedAt)} · {frame.tags.length} tag{frame.tags.length === 1 ? "" : "s"} detected</span></header>{frame.tags.map((tag) => <div key={tag.epc}><code>{tag.epc}</code><span>{tag.rssi ?? "—"} dBm</span></div>)}<details><summary>Raw frame</summary><code>{frame.rawHex}</code></details></article>)}{!frames.length && <Empty text="Decoded frames will appear here in real time." />}</div></section>
   </div>;
