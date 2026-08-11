@@ -9,7 +9,7 @@ import {
   TagSessionManager,
   Um202Parser,
 } from "./lib/rfid";
-import { formatDateTime, formatTime, localDateKey, parseStoredTimestamp } from "./lib/datetime";
+import { formatDateTime, formatLocalDate, formatTime, indiaDateUtcRange, localDateKey, parseStoredTimestamp } from "./lib/datetime";
 
 type Page = "dashboard" | "tools" | "entries" | "diagnostics";
 type ToolRecord = {
@@ -32,7 +32,9 @@ type EntryRecord = {
   category?: string;
 };
 type StoreData = { tools: ToolRecord[]; entries: EntryRecord[] };
-type DeleteTarget = { type: "tool" | "entry"; id: number; label: string };
+type DeleteTarget =
+  | { type: "tool" | "entry"; id: number; label: string }
+  | { type: "date"; dateKey: string; count: number; label: string };
 type SerialPortLike = {
   readable?: ReadableStream<Uint8Array> | null;
   open(options: Record<string, unknown>): Promise<void>;
@@ -249,6 +251,8 @@ export function RFIDConsole() {
     const previous: StoreData = { tools: safeTools, entries: safeEntries };
     const next = deleteTarget.type === "entry"
       ? { tools: safeTools, entries: safeEntries.filter((entry) => entry.id !== deleteTarget.id) }
+      : deleteTarget.type === "date"
+        ? { tools: safeTools, entries: safeEntries.filter((entry) => localDateKey(entry.enteredAt) !== deleteTarget.dateKey) }
       : {
           tools: safeTools.filter((tool) => tool.id !== deleteTarget.id),
           entries: safeEntries.map((entry) => entry.toolId === deleteTarget.id
@@ -263,11 +267,17 @@ export function RFIDConsole() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(deleteTarget.type === "entry"
           ? { action: "deleteEntry", entryId: deleteTarget.id }
-          : { action: "deleteTool", toolId: deleteTarget.id }),
+          : deleteTarget.type === "date"
+            ? { action: "deleteEntriesByDate", ...indiaDateUtcRange(deleteTarget.dateKey) }
+            : { action: "deleteTool", toolId: deleteTarget.id }),
       });
       const data = await readStoreData(response);
       setStore(data);
-      notify(deleteTarget.type === "entry" ? "Entry deleted." : "Tool registration deleted. Historical entries were retained.");
+      notify(deleteTarget.type === "entry"
+        ? "Entry deleted."
+        : deleteTarget.type === "date"
+          ? `All ${deleteTarget.count} entries for ${deleteTarget.label} were deleted.`
+          : "Tool registration deleted. Historical entries were retained.");
       setDeleteTarget(null);
     } catch (error) {
       setStore(previous);
@@ -321,7 +331,7 @@ export function RFIDConsole() {
         <section className="content">
           {page === "dashboard" && <Dashboard tools={safeTools} entries={todayEntries} sessions={sessions} frames={frames} status={status} onNavigate={navigate} onSimulate={() => simulate(false)} onConnect={status === "connected" ? disconnectReader : connectReader} />}
           {page === "tools" && <ToolsPage tools={filteredTools} totalTools={safeTools.length} isFiltered={Boolean(search.trim())} entries={safeEntries} onAdd={() => setRegistrationOpen(true)} onSelect={setSelectedTool} onDelete={(tool) => setDeleteTarget({ type: "tool", id: tool.id, label: tool.name })} />}
-          {page === "entries" && <EntriesPage entries={filteredEntries} totalEntries={safeEntries.length} isFiltered={Boolean(search.trim())} onDelete={(entry) => setDeleteTarget({ type: "entry", id: entry.id, label: `${entry.toolName ?? "Unknown tool"} · ${formatDateTime(entry.enteredAt)}` })} />}
+          {page === "entries" && <EntriesPage entries={filteredEntries} allEntries={safeEntries} totalEntries={safeEntries.length} isFiltered={Boolean(search.trim())} onDelete={(entry) => setDeleteTarget({ type: "entry", id: entry.id, label: `${entry.toolName ?? "Unknown tool"} · ${formatDateTime(entry.enteredAt)}` })} onDeleteDate={(dateKey, count) => setDeleteTarget({ type: "date", dateKey, count, label: formatLocalDate(dateKey) })} />}
           {page === "diagnostics" && <Diagnostics sessions={sessions} frames={frames} now={now} status={status} ports={ports} selectedPort={selectedPort} setSelectedPort={setSelectedPort} chooseReader={chooseReader} connectReader={connectReader} disconnectReader={disconnectReader} />}
         </section>
       </main>
@@ -367,9 +377,18 @@ function ToolsPage({ tools, totalTools, isFiltered, entries, onAdd, onSelect, on
   return <section className="panel table-panel"><PanelHeading title={countLabel} subtitle={isFiltered ? "Filtered results · clear search to show every registered tool" : "Select a tool to view its recorded entry history"} action="Register tool" onAction={onAdd} /><div className="table-scroll"><table><thead><tr><th>Tool</th><th>Category</th><th>Serial number</th><th>EPC</th><th>Entries</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{tools.map((tool) => <tr key={tool.id}><td><button className="tool-link" onClick={() => onSelect(tool)} aria-label={`View entry history for ${tool.name}`}><span>⌁</span><strong>{tool.name}</strong><Icon name="chevron" /></button></td><td>{tool.category}</td><td><code>{tool.serialNumber}</code></td><td><code>{tool.epc}</code></td><td>{entries.filter((entry) => entry.toolId === tool.id).length}</td><td><span className="status-pill available"><i/> {tool.status}</span></td><td className="action-cell"><button className="delete-button" onClick={() => onDelete(tool)} aria-label={`Delete ${tool.name}`}>Delete</button></td></tr>)}</tbody></table></div>{!tools.length && <Empty text="No matching tools found. Clear the search to show all registered tools." />}</section>;
 }
 
-function EntriesPage({ entries, totalEntries, isFiltered, onDelete }: { entries: EntryRecord[]; totalEntries: number; isFiltered: boolean; onDelete: (entry: EntryRecord) => void }) {
-  const countLabel = isFiltered ? `${entries.length} of ${totalEntries} entry events` : "All entry events";
-  return <section className="panel table-panel"><PanelHeading title={countLabel} subtitle={isFiltered ? "Filtered results · clear search to show the full history" : "One row per OUT → ACTIVE EPC transition"} /><div className="table-scroll"><table><thead><tr><th>Date & time</th><th>Tool</th><th>Category</th><th>EPC</th><th>Source</th><th>Result</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{entries.map((entry) => <tr key={entry.id}><td><strong>{formatDateTime(entry.enteredAt)}</strong></td><td>{entry.toolName ?? "Deleted / unregistered tool"}</td><td>{entry.category ?? "—"}</td><td><code>{entry.epc}</code></td><td>{entry.source}</td><td><span className="status-pill logged"><i/> Logged once</span></td><td className="action-cell"><button className="delete-button" onClick={() => onDelete(entry)} aria-label={`Delete entry from ${formatDateTime(entry.enteredAt)}`}>Delete</button></td></tr>)}</tbody></table></div>{!entries.length && <Empty text="No matching entry events found. Clear the search to show the full history." />}</section>;
+function EntriesPage({ entries, allEntries, totalEntries, isFiltered, onDelete, onDeleteDate }: { entries: EntryRecord[]; allEntries: EntryRecord[]; totalEntries: number; isFiltered: boolean; onDelete: (entry: EntryRecord) => void; onDeleteDate: (dateKey: string, count: number) => void }) {
+  const [selectedDate, setSelectedDate] = useState("");
+  const visibleEntries = selectedDate ? entries.filter((entry) => localDateKey(entry.enteredAt) === selectedDate) : entries;
+  const entriesOnSelectedDate = selectedDate ? allEntries.filter((entry) => localDateKey(entry.enteredAt) === selectedDate) : [];
+  const isDateFiltered = Boolean(selectedDate);
+  const countLabel = isDateFiltered
+    ? `${visibleEntries.length} entries on ${formatLocalDate(selectedDate)}`
+    : isFiltered ? `${entries.length} of ${totalEntries} entry events` : "All entry events";
+  const subtitle = isDateFiltered
+    ? `${entriesOnSelectedDate.length} total records exist for this India-time calendar date`
+    : isFiltered ? "Filtered results · clear search to show the full history" : "One row per OUT → ACTIVE EPC transition";
+  return <section className="panel table-panel"><PanelHeading title={countLabel} subtitle={subtitle} /><div className="date-controls"><label><span>Filter by date</span><input type="date" value={selectedDate} max={localDateKey(Date.now())} onChange={(event) => setSelectedDate(event.target.value)} /></label>{selectedDate && <><button className="secondary compact-button" onClick={() => setSelectedDate("")}>Clear date</button><button className="danger-button compact-button" disabled={!entriesOnSelectedDate.length} onClick={() => onDeleteDate(selectedDate, entriesOnSelectedDate.length)}>Delete all {entriesOnSelectedDate.length} for this date</button></>}</div><div className="table-scroll"><table><thead><tr><th>Date & time</th><th>Tool</th><th>Category</th><th>EPC</th><th>Source</th><th>Result</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{visibleEntries.map((entry) => <tr key={entry.id}><td><strong>{formatDateTime(entry.enteredAt)}</strong></td><td>{entry.toolName ?? "Deleted / unregistered tool"}</td><td>{entry.category ?? "—"}</td><td><code>{entry.epc}</code></td><td>{entry.source}</td><td><span className="status-pill logged"><i/> Logged once</span></td><td className="action-cell"><button className="delete-button" onClick={() => onDelete(entry)} aria-label={`Delete entry from ${formatDateTime(entry.enteredAt)}`}>Delete</button></td></tr>)}</tbody></table></div>{!visibleEntries.length && <Empty text={selectedDate ? "No entries were recorded on this date." : "No matching entry events found. Clear the search to show the full history."} />}</section>;
 }
 
 function Diagnostics({ sessions, frames, now, status, ports, selectedPort, setSelectedPort, chooseReader, connectReader, disconnectReader }: { sessions: TagSession[]; frames: ParsedFrame[]; now: number; status: string; ports: SerialPortLike[]; selectedPort: number; setSelectedPort: (index: number) => void; chooseReader: () => void; connectReader: () => void; disconnectReader: () => void }) {
@@ -416,7 +435,8 @@ function ToolHistoryDialog({ tool, entries, onClose }: { tool: ToolRecord; entri
 
 function DeleteDialog({ target, deleting, onCancel, onConfirm }: { target: DeleteTarget; deleting: boolean; onCancel: () => void; onConfirm: () => void }) {
   const isTool = target.type === "tool";
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !deleting) onCancel(); }}><section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title"><div className="danger-mark">!</div><div><span className="eyebrow">Permanent action</span><h2 id="delete-title">Delete {isTool ? "registered tool" : "entry"}?</h2><p><strong>{target.label}</strong></p><p>{isTool ? "The tool will no longer be recognized for new entries. Its existing entry history will remain available by EPC." : "This individual entry event will be permanently removed from history."}</p></div><footer><button className="secondary" onClick={onCancel} disabled={deleting}>Cancel</button><button className="danger-button" onClick={onConfirm} disabled={deleting}>{deleting ? "Deleting…" : "Delete permanently"}</button></footer></section></div>;
+  const isDate = target.type === "date";
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !deleting) onCancel(); }}><section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title"><div className="danger-mark">!</div><div><span className="eyebrow">Permanent action</span><h2 id="delete-title">{isDate ? `Delete all ${target.count} entries for this date?` : `Delete ${isTool ? "registered tool" : "entry"}?`}</h2><p><strong>{target.label}</strong></p><p>{isDate ? "Every entry recorded during this India-time calendar date will be permanently removed. Tools remain registered." : isTool ? "The tool will no longer be recognized for new entries. Its existing entry history will remain available by EPC." : "This individual entry event will be permanently removed from history."}</p></div><footer><button className="secondary" onClick={onCancel} disabled={deleting}>Cancel</button><button className="danger-button" onClick={onConfirm} disabled={deleting}>{deleting ? "Deleting…" : isDate ? `Delete all ${target.count}` : "Delete permanently"}</button></footer></section></div>;
 }
 
 function Empty({ text }: { text: string }) { return <div className="empty"><span>⌁</span><p>{text}</p></div>; }

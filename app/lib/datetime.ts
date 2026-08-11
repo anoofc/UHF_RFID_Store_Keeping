@@ -34,3 +34,24 @@ export function localDateKey(value: number | string) {
     timeZone: DISPLAY_TIME_ZONE,
   }).format(parseStoredTimestamp(value));
 }
+
+export function indiaDateUtcRange(dateKey: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) throw new Error("Invalid local date");
+  const start = new Date(`${dateKey}T00:00:00+05:30`);
+  if (Number.isNaN(start.getTime())) throw new Error("Invalid local date");
+  return {
+    fromUtc: start.toISOString(),
+    toUtc: new Date(start.getTime() + 86_400_000).toISOString(),
+  };
+}
+
+export function formatLocalDate(dateKey: string) {
+  const { fromUtc } = indiaDateUtcRange(dateKey);
+  return new Intl.DateTimeFormat("en", {
+    weekday: "short",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: DISPLAY_TIME_ZONE,
+  }).format(new Date(fromUtc));
+}

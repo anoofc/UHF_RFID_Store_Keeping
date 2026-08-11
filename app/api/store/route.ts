@@ -48,7 +48,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const db = await ready();
-    const body = (await request.json()) as { action?: string; tool?: ToolInput; epc?: string; source?: string; entryId?: number; toolId?: number };
+    const body = (await request.json()) as { action?: string; tool?: ToolInput; epc?: string; source?: string; entryId?: number; toolId?: number; fromUtc?: string; toUtc?: string };
     if (body.action === "addTool" && body.tool) {
       const tool = body.tool;
       if (!tool.name.trim() || !tool.category.trim() || !tool.serialNumber.trim() || !tool.epc.trim()) {
@@ -66,6 +66,14 @@ export async function POST(request: Request) {
         .bind(tool.id, epc, body.source ?? "RFID").run();
     } else if (body.action === "deleteEntry" && Number.isInteger(body.entryId)) {
       await db.prepare("DELETE FROM entries WHERE id = ?").bind(body.entryId).run();
+    } else if (body.action === "deleteEntriesByDate" && body.fromUtc && body.toUtc) {
+      const from = new Date(body.fromUtc);
+      const to = new Date(body.toUtc);
+      if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) {
+        return Response.json({ error: "Invalid date range" }, { status: 400 });
+      }
+      await db.prepare("DELETE FROM entries WHERE datetime(entered_at) >= datetime(?) AND datetime(entered_at) < datetime(?)")
+        .bind(from.toISOString(), to.toISOString()).run();
     } else if (body.action === "deleteTool" && Number.isInteger(body.toolId)) {
       // Keep the audit trail, but detach it before removing the registration.
       // Historical rows remain identifiable by their captured EPC.
