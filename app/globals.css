@@ -43,6 +43,7 @@ code { font-family:var(--font-geist-mono), monospace; }
 .top-actions { display:flex; align-items:center; gap:12px; }
 .search { width:min(25vw,270px); height:40px; display:flex; align-items:center; gap:8px; padding:0 12px; border:1px solid var(--line); border-radius:9px; background:#fff; color:#8a9894; }
 .search input { min-width:0; width:100%; border:0; outline:0; color:var(--ink); background:transparent; font-size:12px; }
+.search-clear { width:22px; height:22px; flex:0 0 22px; display:grid; place-items:center; padding:0; border:0; border-radius:50%; color:#63736e; background:#edf2ef; font-size:15px; line-height:1; }.search-clear:hover,.search-clear:focus-visible{color:#173c34;background:#dfe9e5;outline:0}
 .avatar { width:40px; height:40px; border-radius:50%; display:grid; place-items:center; color:#dff3ed; background:#285c53; font-size:11px; font-weight:700; }
 .primary,.secondary { min-height:40px; padding:0 16px; display:inline-flex; align-items:center; justify-content:center; gap:8px; border-radius:8px; font-size:12px; font-weight:700; transition:.18s ease; }
 .primary { border:1px solid var(--teal); color:white; background:var(--teal); box-shadow:0 4px 10px rgba(11,104,92,.14); }

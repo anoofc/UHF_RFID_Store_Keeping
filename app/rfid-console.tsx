@@ -256,6 +256,17 @@ export function RFIDConsole() {
     }
   }
 
+  function navigate(nextPage: Page) {
+    setPage(nextPage);
+    setSearch("");
+    setMobileNav(false);
+  }
+
+  function updateSearch(value: string) {
+    setSearch(value);
+    if (value && (page === "dashboard" || page === "diagnostics")) setPage("tools");
+  }
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${mobileNav ? "sidebar-open" : ""}`}>
@@ -263,7 +274,7 @@ export function RFIDConsole() {
         <p className="nav-label">Workspace</p>
         <nav aria-label="Main navigation">
           {(["dashboard", "tools", "entries", "diagnostics"] as Page[]).map((item) => (
-            <button key={item} className={page === item ? "active" : ""} onClick={() => { setPage(item); setMobileNav(false); }}>
+            <button key={item} className={page === item ? "active" : ""} onClick={() => navigate(item)}>
               <Icon name={item} /><span>{item[0].toUpperCase() + item.slice(1)}</span>{item === "entries" && <em>{todayEntries.length}</em>}
             </button>
           ))}
@@ -280,16 +291,16 @@ export function RFIDConsole() {
           <button className="mobile-menu" aria-label="Open navigation" onClick={() => setMobileNav(true)}><Icon name="menu" /></button>
           <div><h1>{title[page][0]}{page === "dashboard" && <span>.</span>}</h1><p>{title[page][1]}</p></div>
           <div className="top-actions">
-            <label className="search"><Icon name="search" /><input aria-label="Search tools and entries" placeholder="Search tools, EPCs…" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+            <label className="search"><Icon name="search" /><input aria-label="Search tools and entries" placeholder={page === "entries" ? "Search entries, EPCs…" : "Search tools, EPCs…"} value={search} onChange={(event) => updateSearch(event.target.value)} />{search && <button type="button" className="search-clear" aria-label="Clear search" onClick={() => setSearch("")}>×</button>}</label>
             <button className="primary" onClick={() => setRegistrationOpen(true)}><Icon name="add" /> Add new tool</button>
             <div className="avatar" title="Store administrator">AM</div>
           </div>
         </header>
 
         <section className="content">
-          {page === "dashboard" && <Dashboard tools={store.tools} entries={todayEntries} sessions={sessions} frames={frames} status={status} onNavigate={setPage} onSimulate={() => simulate(false)} onConnect={status === "connected" ? disconnectReader : connectReader} />}
-          {page === "tools" && <ToolsPage tools={filteredTools} entries={store.entries} onAdd={() => setRegistrationOpen(true)} onDelete={(tool) => setDeleteTarget({ type: "tool", id: tool.id, label: tool.name })} />}
-          {page === "entries" && <EntriesPage entries={filteredEntries} onDelete={(entry) => setDeleteTarget({ type: "entry", id: entry.id, label: `${entry.toolName ?? "Unknown tool"} · ${formatDateTime(entry.enteredAt)}` })} />}
+          {page === "dashboard" && <Dashboard tools={store.tools} entries={todayEntries} sessions={sessions} frames={frames} status={status} onNavigate={navigate} onSimulate={() => simulate(false)} onConnect={status === "connected" ? disconnectReader : connectReader} />}
+          {page === "tools" && <ToolsPage tools={filteredTools} totalTools={store.tools.length} isFiltered={Boolean(search.trim())} entries={store.entries} onAdd={() => setRegistrationOpen(true)} onDelete={(tool) => setDeleteTarget({ type: "tool", id: tool.id, label: tool.name })} />}
+          {page === "entries" && <EntriesPage entries={filteredEntries} totalEntries={store.entries.length} isFiltered={Boolean(search.trim())} onDelete={(entry) => setDeleteTarget({ type: "entry", id: entry.id, label: `${entry.toolName ?? "Unknown tool"} · ${formatDateTime(entry.enteredAt)}` })} />}
           {page === "diagnostics" && <Diagnostics sessions={sessions} frames={frames} now={now} status={status} ports={ports} selectedPort={selectedPort} setSelectedPort={setSelectedPort} chooseReader={chooseReader} connectReader={connectReader} disconnectReader={disconnectReader} />}
         </section>
       </main>
@@ -329,12 +340,14 @@ function PanelHeading({ title, subtitle, action, onAction }: { title: string; su
   return <header className="panel-heading"><div><h2>{title}</h2><p>{subtitle}</p></div>{action && <button onClick={onAction}>{action} <Icon name="chevron" /></button>}</header>;
 }
 
-function ToolsPage({ tools, entries, onAdd, onDelete }: { tools: ToolRecord[]; entries: EntryRecord[]; onAdd: () => void; onDelete: (tool: ToolRecord) => void }) {
-  return <section className="panel table-panel"><PanelHeading title={`${tools.length} registered tools`} subtitle="Each EPC is unique and maps to one physical tool" action="Register tool" onAction={onAdd} /><div className="table-scroll"><table><thead><tr><th>Tool</th><th>Category</th><th>Serial number</th><th>EPC</th><th>Entries</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{tools.map((tool) => <tr key={tool.id}><td><div className="table-tool"><span>⌁</span><strong>{tool.name}</strong></div></td><td>{tool.category}</td><td><code>{tool.serialNumber}</code></td><td><code>{tool.epc}</code></td><td>{entries.filter((entry) => entry.toolId === tool.id).length}</td><td><span className="status-pill available"><i/> {tool.status}</span></td><td className="action-cell"><button className="delete-button" onClick={() => onDelete(tool)} aria-label={`Delete ${tool.name}`}>Delete</button></td></tr>)}</tbody></table></div>{!tools.length && <Empty text="No matching tools found." />}</section>;
+function ToolsPage({ tools, totalTools, isFiltered, entries, onAdd, onDelete }: { tools: ToolRecord[]; totalTools: number; isFiltered: boolean; entries: EntryRecord[]; onAdd: () => void; onDelete: (tool: ToolRecord) => void }) {
+  const countLabel = isFiltered ? `${tools.length} of ${totalTools} registered tools` : `${totalTools} registered tools`;
+  return <section className="panel table-panel"><PanelHeading title={countLabel} subtitle={isFiltered ? "Filtered results · clear search to show every registered tool" : "Each EPC is unique and maps to one physical tool"} action="Register tool" onAction={onAdd} /><div className="table-scroll"><table><thead><tr><th>Tool</th><th>Category</th><th>Serial number</th><th>EPC</th><th>Entries</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{tools.map((tool) => <tr key={tool.id}><td><div className="table-tool"><span>⌁</span><strong>{tool.name}</strong></div></td><td>{tool.category}</td><td><code>{tool.serialNumber}</code></td><td><code>{tool.epc}</code></td><td>{entries.filter((entry) => entry.toolId === tool.id).length}</td><td><span className="status-pill available"><i/> {tool.status}</span></td><td className="action-cell"><button className="delete-button" onClick={() => onDelete(tool)} aria-label={`Delete ${tool.name}`}>Delete</button></td></tr>)}</tbody></table></div>{!tools.length && <Empty text="No matching tools found. Clear the search to show all registered tools." />}</section>;
 }
 
-function EntriesPage({ entries, onDelete }: { entries: EntryRecord[]; onDelete: (entry: EntryRecord) => void }) {
-  return <section className="panel table-panel"><PanelHeading title="All entry events" subtitle="One row per OUT → ACTIVE EPC transition" /><div className="table-scroll"><table><thead><tr><th>Date & time</th><th>Tool</th><th>Category</th><th>EPC</th><th>Source</th><th>Result</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{entries.map((entry) => <tr key={entry.id}><td><strong>{formatDateTime(entry.enteredAt)}</strong></td><td>{entry.toolName ?? "Deleted / unregistered tool"}</td><td>{entry.category ?? "—"}</td><td><code>{entry.epc}</code></td><td>{entry.source}</td><td><span className="status-pill logged"><i/> Logged once</span></td><td className="action-cell"><button className="delete-button" onClick={() => onDelete(entry)} aria-label={`Delete entry from ${formatDateTime(entry.enteredAt)}`}>Delete</button></td></tr>)}</tbody></table></div>{!entries.length && <Empty text="No matching entry events found." />}</section>;
+function EntriesPage({ entries, totalEntries, isFiltered, onDelete }: { entries: EntryRecord[]; totalEntries: number; isFiltered: boolean; onDelete: (entry: EntryRecord) => void }) {
+  const countLabel = isFiltered ? `${entries.length} of ${totalEntries} entry events` : "All entry events";
+  return <section className="panel table-panel"><PanelHeading title={countLabel} subtitle={isFiltered ? "Filtered results · clear search to show the full history" : "One row per OUT → ACTIVE EPC transition"} /><div className="table-scroll"><table><thead><tr><th>Date & time</th><th>Tool</th><th>Category</th><th>EPC</th><th>Source</th><th>Result</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{entries.map((entry) => <tr key={entry.id}><td><strong>{formatDateTime(entry.enteredAt)}</strong></td><td>{entry.toolName ?? "Deleted / unregistered tool"}</td><td>{entry.category ?? "—"}</td><td><code>{entry.epc}</code></td><td>{entry.source}</td><td><span className="status-pill logged"><i/> Logged once</span></td><td className="action-cell"><button className="delete-button" onClick={() => onDelete(entry)} aria-label={`Delete entry from ${formatDateTime(entry.enteredAt)}`}>Delete</button></td></tr>)}</tbody></table></div>{!entries.length && <Empty text="No matching entry events found. Clear the search to show the full history." />}</section>;
 }
 
 function Diagnostics({ sessions, frames, now, status, ports, selectedPort, setSelectedPort, chooseReader, connectReader, disconnectReader }: { sessions: TagSession[]; frames: ParsedFrame[]; now: number; status: string; ports: SerialPortLike[]; selectedPort: number; setSelectedPort: (index: number) => void; chooseReader: () => void; connectReader: () => void; disconnectReader: () => void }) {
