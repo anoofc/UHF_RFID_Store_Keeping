@@ -48,7 +48,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const db = await ready();
-    const body = (await request.json()) as { action?: string; tool?: ToolInput; epc?: string; source?: string };
+    const body = (await request.json()) as { action?: string; tool?: ToolInput; epc?: string; source?: string; entryId?: number; toolId?: number };
     if (body.action === "addTool" && body.tool) {
       const tool = body.tool;
       if (!tool.name.trim() || !tool.category.trim() || !tool.serialNumber.trim() || !tool.epc.trim()) {
@@ -62,6 +62,15 @@ export async function POST(request: Request) {
       if (!tool) return Response.json({ logged: false, reason: "unregistered" });
       await db.prepare("INSERT INTO entries (tool_id, epc, source) VALUES (?, ?, ?)")
         .bind(tool.id, epc, body.source ?? "RFID").run();
+    } else if (body.action === "deleteEntry" && Number.isInteger(body.entryId)) {
+      await db.prepare("DELETE FROM entries WHERE id = ?").bind(body.entryId).run();
+    } else if (body.action === "deleteTool" && Number.isInteger(body.toolId)) {
+      // Keep the audit trail, but detach it before removing the registration.
+      // Historical rows remain identifiable by their captured EPC.
+      await db.batch([
+        db.prepare("UPDATE entries SET tool_id = NULL WHERE tool_id = ?").bind(body.toolId),
+        db.prepare("DELETE FROM tools WHERE id = ?").bind(body.toolId),
+      ]);
     } else if (body.action === "seed") {
       const count = await db.prepare("SELECT COUNT(*) AS count FROM tools").first<{ count: number }>();
       if (!count?.count) {

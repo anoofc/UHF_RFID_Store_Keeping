@@ -31,6 +31,7 @@ type EntryRecord = {
   category?: string;
 };
 type StoreData = { tools: ToolRecord[]; entries: EntryRecord[] };
+type DeleteTarget = { type: "tool" | "entry"; id: number; label: string };
 type SerialPortLike = {
   readable?: ReadableStream<Uint8Array> | null;
   open(options: Record<string, unknown>): Promise<void>;
@@ -89,6 +90,8 @@ export function RFIDConsole() {
   const [registrationOpen, setRegistrationOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [now, setNow] = useState(Date.now());
   const manager = useRef(new TagSessionManager(3000));
   const parser = useRef(new Um202Parser());
@@ -227,6 +230,40 @@ export function RFIDConsole() {
   const filteredTools = store.tools.filter((tool) => `${tool.name} ${tool.category} ${tool.serialNumber} ${tool.epc}`.toLowerCase().includes(search.toLowerCase()));
   const filteredEntries = store.entries.filter((entry) => `${entry.toolName} ${entry.category} ${entry.epc}`.toLowerCase().includes(search.toLowerCase()));
 
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    const previous = store;
+    const next = deleteTarget.type === "entry"
+      ? { ...store, entries: store.entries.filter((entry) => entry.id !== deleteTarget.id) }
+      : {
+          tools: store.tools.filter((tool) => tool.id !== deleteTarget.id),
+          entries: store.entries.map((entry) => entry.toolId === deleteTarget.id
+            ? { ...entry, toolId: 0, toolName: undefined, category: undefined }
+            : entry),
+        };
+    setDeleting(true);
+    setStore(next);
+    try {
+      const response = await fetch("/api/store", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(deleteTarget.type === "entry"
+          ? { action: "deleteEntry", entryId: deleteTarget.id }
+          : { action: "deleteTool", toolId: deleteTarget.id }),
+      });
+      const data = await response.json() as StoreData & { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Delete failed");
+      setStore(data);
+      notify(deleteTarget.type === "entry" ? "Entry deleted." : "Tool registration deleted. Historical entries were retained.");
+      setDeleteTarget(null);
+    } catch (error) {
+      setStore(previous);
+      notify(error instanceof Error ? error.message : "Could not delete that record.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${mobileNav ? "sidebar-open" : ""}`}>
@@ -259,13 +296,14 @@ export function RFIDConsole() {
 
         <section className="content">
           {page === "dashboard" && <Dashboard tools={store.tools} entries={todayEntries} sessions={sessions} frames={frames} status={status} onNavigate={setPage} onSimulate={() => simulate(false)} onConnect={status === "connected" ? disconnectReader : connectReader} />}
-          {page === "tools" && <ToolsPage tools={filteredTools} entries={store.entries} onAdd={() => setRegistrationOpen(true)} />}
-          {page === "entries" && <EntriesPage entries={filteredEntries} />}
+          {page === "tools" && <ToolsPage tools={filteredTools} entries={store.entries} onAdd={() => setRegistrationOpen(true)} onDelete={(tool) => setDeleteTarget({ type: "tool", id: tool.id, label: tool.name })} />}
+          {page === "entries" && <EntriesPage entries={filteredEntries} onDelete={(entry) => setDeleteTarget({ type: "entry", id: entry.id, label: `${entry.toolName ?? "Unknown tool"} · ${dateTime(entry.enteredAt)}` })} />}
           {page === "diagnostics" && <Diagnostics sessions={sessions} frames={frames} now={now} status={status} ports={ports} selectedPort={selectedPort} setSelectedPort={setSelectedPort} chooseReader={chooseReader} connectReader={connectReader} disconnectReader={disconnectReader} simInput={simInput} setSimInput={setSimInput} simulate={simulate} />}
         </section>
       </main>
 
       {registrationOpen && <RegistrationModal sessions={sessions} tools={store.tools} onClose={() => setRegistrationOpen(false)} onSaved={(data) => { setStore(data); setRegistrationOpen(false); notify("Tool registered and ready for detection."); }} />}
+      {deleteTarget && <DeleteDialog target={deleteTarget} deleting={deleting} onCancel={() => setDeleteTarget(null)} onConfirm={confirmDelete} />}
       {toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}
     </div>
   );
@@ -299,12 +337,12 @@ function PanelHeading({ title, subtitle, action, onAction }: { title: string; su
   return <header className="panel-heading"><div><h2>{title}</h2><p>{subtitle}</p></div>{action && <button onClick={onAction}>{action} <Icon name="chevron" /></button>}</header>;
 }
 
-function ToolsPage({ tools, entries, onAdd }: { tools: ToolRecord[]; entries: EntryRecord[]; onAdd: () => void }) {
-  return <section className="panel table-panel"><PanelHeading title={`${tools.length} registered tools`} subtitle="Each EPC is unique and maps to one physical tool" action="Register tool" onAction={onAdd} /><div className="table-scroll"><table><thead><tr><th>Tool</th><th>Category</th><th>Serial number</th><th>EPC</th><th>Entries</th><th>Status</th></tr></thead><tbody>{tools.map((tool) => <tr key={tool.id}><td><div className="table-tool"><span>⌁</span><strong>{tool.name}</strong></div></td><td>{tool.category}</td><td><code>{tool.serialNumber}</code></td><td><code>{tool.epc}</code></td><td>{entries.filter((entry) => entry.toolId === tool.id).length}</td><td><span className="status-pill available"><i/> {tool.status}</span></td></tr>)}</tbody></table></div>{!tools.length && <Empty text="No matching tools found." />}</section>;
+function ToolsPage({ tools, entries, onAdd, onDelete }: { tools: ToolRecord[]; entries: EntryRecord[]; onAdd: () => void; onDelete: (tool: ToolRecord) => void }) {
+  return <section className="panel table-panel"><PanelHeading title={`${tools.length} registered tools`} subtitle="Each EPC is unique and maps to one physical tool" action="Register tool" onAction={onAdd} /><div className="table-scroll"><table><thead><tr><th>Tool</th><th>Category</th><th>Serial number</th><th>EPC</th><th>Entries</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{tools.map((tool) => <tr key={tool.id}><td><div className="table-tool"><span>⌁</span><strong>{tool.name}</strong></div></td><td>{tool.category}</td><td><code>{tool.serialNumber}</code></td><td><code>{tool.epc}</code></td><td>{entries.filter((entry) => entry.toolId === tool.id).length}</td><td><span className="status-pill available"><i/> {tool.status}</span></td><td className="action-cell"><button className="delete-button" onClick={() => onDelete(tool)} aria-label={`Delete ${tool.name}`}>Delete</button></td></tr>)}</tbody></table></div>{!tools.length && <Empty text="No matching tools found." />}</section>;
 }
 
-function EntriesPage({ entries }: { entries: EntryRecord[] }) {
-  return <section className="panel table-panel"><PanelHeading title="All entry events" subtitle="One row per OUT → ACTIVE EPC transition" /><div className="table-scroll"><table><thead><tr><th>Date & time</th><th>Tool</th><th>Category</th><th>EPC</th><th>Source</th><th>Result</th></tr></thead><tbody>{entries.map((entry) => <tr key={entry.id}><td><strong>{dateTime(entry.enteredAt)}</strong></td><td>{entry.toolName ?? "Unregistered tag"}</td><td>{entry.category ?? "—"}</td><td><code>{entry.epc}</code></td><td>{entry.source}</td><td><span className="status-pill logged"><i/> Logged once</span></td></tr>)}</tbody></table></div>{!entries.length && <Empty text="No matching entry events found." />}</section>;
+function EntriesPage({ entries, onDelete }: { entries: EntryRecord[]; onDelete: (entry: EntryRecord) => void }) {
+  return <section className="panel table-panel"><PanelHeading title="All entry events" subtitle="One row per OUT → ACTIVE EPC transition" /><div className="table-scroll"><table><thead><tr><th>Date & time</th><th>Tool</th><th>Category</th><th>EPC</th><th>Source</th><th>Result</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{entries.map((entry) => <tr key={entry.id}><td><strong>{dateTime(entry.enteredAt)}</strong></td><td>{entry.toolName ?? "Deleted / unregistered tool"}</td><td>{entry.category ?? "—"}</td><td><code>{entry.epc}</code></td><td>{entry.source}</td><td><span className="status-pill logged"><i/> Logged once</span></td><td className="action-cell"><button className="delete-button" onClick={() => onDelete(entry)} aria-label={`Delete entry from ${dateTime(entry.enteredAt)}`}>Delete</button></td></tr>)}</tbody></table></div>{!entries.length && <Empty text="No matching entry events found." />}</section>;
 }
 
 function Diagnostics({ sessions, frames, now, status, ports, selectedPort, setSelectedPort, chooseReader, connectReader, disconnectReader, simInput, setSimInput, simulate }: { sessions: TagSession[]; frames: ParsedFrame[]; now: number; status: string; ports: SerialPortLike[]; selectedPort: number; setSelectedPort: (index: number) => void; chooseReader: () => void; connectReader: () => void; disconnectReader: () => void; simInput: string; setSimInput: (value: string) => void; simulate: (burst?: boolean) => void }) {
@@ -339,6 +377,11 @@ function RegistrationModal({ sessions, tools, onClose, onSaved }: { sessions: Ta
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not register tool"); setSaving(false); }
   }
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" onSubmit={save}><header><div><span className="eyebrow">RFID registry</span><h2>Add a new tool</h2><p>Link one physical tool to a unique UHF EPC.</p></div><button type="button" className="icon-button" aria-label="Close" onClick={onClose}><Icon name="close" /></button></header><div className="form-grid"><label className="field-label">Tool name<input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. DeWalt Angle Grinder" /></label><label className="field-label">Category<select value={category} onChange={(e) => setCategory(e.target.value)}><option>Power tools</option><option>Hand tools</option><option>Test equipment</option><option>Safety equipment</option><option>Other</option></select></label><label className="field-label">Serial number<input value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} placeholder="Manufacturer serial" /></label><label className="field-label">EPC<input value={epc} onChange={(e) => setEpc(e.target.value.toUpperCase())} placeholder="24-digit hexadecimal EPC" /></label></div><div className="detected"><strong>Detected unregistered tags</strong><p>Select the tag introduced for this tool. Newest detection is highlighted.</p>{candidates.length ? candidates.map((session, index) => <button type="button" key={session.epc} className={`${epc === session.epc ? "selected" : ""} ${index === 0 ? "newest" : ""}`} onClick={() => setEpc(session.epc)}><span className="live-dot"/><code>{session.epc}</code><em>{index === 0 ? "Newest" : `${session.readCount} reads`}</em></button>) : <div className="empty-small">No unregistered tags detected. You can enter the EPC manually.</div>}</div>{error && <p className="form-error">{error}</p>}<footer><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={saving}>{saving ? "Saving…" : "Register tool"}</button></footer></form></div>;
+}
+
+function DeleteDialog({ target, deleting, onCancel, onConfirm }: { target: DeleteTarget; deleting: boolean; onCancel: () => void; onConfirm: () => void }) {
+  const isTool = target.type === "tool";
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !deleting) onCancel(); }}><section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title"><div className="danger-mark">!</div><div><span className="eyebrow">Permanent action</span><h2 id="delete-title">Delete {isTool ? "registered tool" : "entry"}?</h2><p><strong>{target.label}</strong></p><p>{isTool ? "The tool will no longer be recognized for new entries. Its existing entry history will remain available by EPC." : "This individual entry event will be permanently removed from history."}</p></div><footer><button className="secondary" onClick={onCancel} disabled={deleting}>Cancel</button><button className="danger-button" onClick={onConfirm} disabled={deleting}>{deleting ? "Deleting…" : "Delete permanently"}</button></footer></section></div>;
 }
 
 function Empty({ text }: { text: string }) { return <div className="empty"><span>⌁</span><p>{text}</p></div>; }
