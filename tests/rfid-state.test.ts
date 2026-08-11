@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { TagSessionManager, Um202Parser } from "../app/lib/rfid.ts";
+import { formatDateTime, parseStoredTimestamp } from "../app/lib/datetime.ts";
 
 const A = { epc: "E20034120123456789ABC001", rssi: -41 };
 const B = { epc: "E20034120123456789ABC002", rssi: -44 };
@@ -71,4 +72,9 @@ test("repeated captured UM202 packets remain one active tag session", () => {
   assert.equal(activations, 1);
   assert.equal(manager.snapshot()[0].readCount, 3);
   assert.equal(manager.snapshot()[0].lastRSSI, -43);
+});
+
+test("SQLite UTC timestamps display in India Standard Time", () => {
+  assert.equal(parseStoredTimestamp("2026-08-11 01:41:00").toISOString(), "2026-08-11T01:41:00.000Z");
+  assert.match(formatDateTime("2026-08-11 01:41:00"), /Aug 11, 07:11 AM/);
 });
